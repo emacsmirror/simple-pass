@@ -61,12 +61,12 @@ Entry will be deleted from the kill ring within 30 seconds."
   "Edit pass ENTRY."
   (interactive)
   (let ((entry (or entry (completing-read "Select entry: " (simple-pass-entries)))))
-    (async-shell-command (format "pass edit %s" entry))))
+    (with-editor-async-shell-command (format "pass edit %s" entry))))
 
 (defun simple-pass-autotype (&optional entry)
   "Autotype password ENTRY."
   (let* ((entry (or entry (completing-read "Select entry: " (simple-pass-entries))))
-	 (user (or (auth-source-pass-get "user "entry) (file-name-base entry)))
+	 (user (or (auth-source-pass-get "user" entry) (file-name-base entry)))
 	 (pass (auth-source-pass-get 'secret entry)))
     (start-process-shell-command
      "wtype" nil
