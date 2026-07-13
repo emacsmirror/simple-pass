@@ -30,6 +30,7 @@
 ;;; Code:
 
 (require 'auth-source-pass)
+(require 'subr-x)
 
 (defgroup simple-pass nil
   "A small Emacs front end for pass."
@@ -57,6 +58,17 @@ available, falling back to `~/.password-store'."
   "Return the extension-free entry name for FILE under DIRECTORY."
   (file-name-sans-extension (file-relative-name file directory)))
 
+(defun simple-pass--require-entry (entry)
+  "Return ENTRY, or signal a user error when it is empty."
+  (if (and entry (not (string= entry "")))
+      entry
+    (user-error "No pass entry selected")))
+
+(defun simple-pass--process-error (program status)
+  "Signal a clear error for PROGRAM terminating with STATUS."
+  (unless (and (integerp status) (zerop status))
+    (user-error "%s failed (exit status %s)" program status)))
+
 (defun simple-pass-entries ()
   "Return sorted, extension-free names of all pass entries.
 
@@ -80,7 +92,8 @@ unreadable."
 
 Entry will be deleted from the kill ring within 30 seconds."
   (interactive)
-  (let* ((entry (or entry (completing-read "Select entry: " (simple-pass-entries))))
+  (let* ((entry (simple-pass--require-entry
+                 (or entry (completing-read "Select entry: " (simple-pass-entries)))))
 	 (pass (auth-source-pass-get 'secret entry)))
     (kill-new pass)
     (run-at-time 30 nil (lambda () (setq kill-ring (delete pass kill-ring))))))
@@ -88,34 +101,47 @@ Entry will be deleted from the kill ring within 30 seconds."
 (defun simple-pass-generate ()
   "Generate new entry."
   (interactive)
-  (let* ((entry (completing-read "New entry: " (simple-pass-entries))))
+  (let* ((entry (simple-pass--require-entry
+                 (completing-read "New entry: " (simple-pass-entries))))
+         (length (+ 14 (random 25))))
     (if (member entry (simple-pass-entries))
 	(error "Entry already exists")
-      (shell-command (format "pass generate %s %d" entry (+ 14 (random 25))))
+      (simple-pass--process-error
+       "pass generate"
+       (process-file "pass" nil nil nil "generate" entry
+                     (number-to-string length)))
       (simple-pass-copy entry))))
 
 (defun simple-pass-edit (&optional entry)
   "Edit pass ENTRY."
   (interactive)
-  (let ((entry (or entry (completing-read "Select entry: " (simple-pass-entries)))))
-    (with-editor-async-shell-command (format "pass edit %s" entry))))
+  (let ((entry (simple-pass--require-entry
+                (or entry (completing-read "Select entry: " (simple-pass-entries))))))
+    (with-editor-async-shell-command
+     (format "pass edit %s" (shell-quote-argument entry)))))
 
 (defun simple-pass-autotype (&optional entry)
   "Autotype password ENTRY."
-  (let* ((entry (or entry (completing-read "Select entry: " (simple-pass-entries))))
+  (let* ((entry (simple-pass--require-entry
+                 (or entry (completing-read "Select entry: " (simple-pass-entries)))))
 	 (user (or (auth-source-pass-get "user" entry) (file-name-base entry)))
 	 (pass (auth-source-pass-get 'secret entry)))
-    (start-process-shell-command
-     "wtype" nil
-     (format "wtype -s 300 %s -P tab %s"
-	     (shell-quote-argument user)
-	     (shell-quote-argument pass)))))
+    (start-process "wtype" nil "wtype" "-s" "300" user "-P" "tab" pass)))
 
 (defun simple-pass-get-otp (&optional entry)
   "Get OTP for ENTRY."
   (interactive)
-  (let* ((entry (or entry (completing-read "Select otp entry: " (simple-pass-entries)))))
-    (kill-new (shell-command-to-string (format "pass otp show %s" entry)))))
+  (let* ((entry (simple-pass--require-entry
+                 (or entry (completing-read "Select otp entry: " (simple-pass-entries)))))
+         (buffer (generate-new-buffer " *simple-pass-otp*")))
+    (unwind-protect
+        (progn
+          (simple-pass--process-error
+           "pass otp show"
+           (process-file "pass" nil buffer nil "otp" "show" entry))
+          (with-current-buffer buffer
+            (kill-new (string-trim (buffer-string)))))
+      (kill-buffer buffer))))
 
 (defmacro simple-pass-make-frame (name &rest body)
   "Execute BODY in a temporary frame named NAME.

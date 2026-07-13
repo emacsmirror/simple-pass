@@ -1,6 +1,7 @@
 ;;; simple-pass-tests.el --- Tests for simple-pass  -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'cl-lib)
 (require 'simple-pass)
 
 (defun simple-pass-test--write-entry (directory name)
@@ -65,5 +66,55 @@
                                          (error-message-string error-data))))))))
       (set-file-modes directory #o700)
       (delete-directory directory t))))
+
+(ert-deftest simple-pass-rejects-empty-entry ()
+  "An empty selection is rejected before any external command runs."
+  (should-error (simple-pass-copy "") :type 'user-error)
+  (should-error (simple-pass-edit "") :type 'user-error)
+  (should-error (simple-pass-autotype "") :type 'user-error)
+  (should-error (simple-pass-get-otp "") :type 'user-error))
+
+(ert-deftest simple-pass-generate-uses-argv-and-reports-failure ()
+  "Generation passes entry names as argv and reports process failures."
+  (let (arguments)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "weird;entry"))
+              ((symbol-function 'simple-pass-entries) (lambda () nil))
+              ((symbol-function 'process-file)
+               (lambda (program infile destination display &rest args)
+                 (setq arguments (cons program args))
+                 17)))
+      (should-error (simple-pass-generate) :type 'user-error)
+      (should (equal '("pass" "generate" "weird;entry")
+                     (butlast arguments 1)))
+      (should (string-match-p "^[0-9]+$" (car (last arguments)))))))
+
+(ert-deftest simple-pass-get-otp-uses-argv-and-trims-output ()
+  "OTP retrieval does not build a shell command and trims its output."
+  (let (arguments otp)
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (program infile destination display &rest args)
+                 (setq arguments (cons program args))
+                 (with-current-buffer destination
+                   (insert "123456\n"))
+                 0))
+              ((symbol-function 'kill-new)
+               (lambda (value) (setq otp value))))
+      (simple-pass-get-otp "weird;entry")
+      (should (equal '("pass" "otp" "show" "weird;entry") arguments))
+      (should (equal "123456" otp)))))
+
+(ert-deftest simple-pass-autotype-uses-argv ()
+  "Autotype passes user and password as process arguments, not shell text."
+  (let (arguments)
+    (cl-letf (((symbol-function 'auth-source-pass-get)
+               (lambda (field _entry)
+                 (if (equal field "user") "user;name" "pass$word")))
+              ((symbol-function 'start-process)
+               (lambda (name buffer program &rest args)
+                 (setq arguments (cons program args)))))
+      (simple-pass-autotype "entry;name")
+      (should (equal '("wtype" "-s" "300" "user;name" "-P" "tab" "pass$word")
+                     arguments)))))
 
 ;;; simple-pass-tests.el ends here
