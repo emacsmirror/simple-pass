@@ -45,6 +45,13 @@ available, falling back to `~/.password-store'."
                  directory)
   :group 'simple-pass)
 
+(defcustom simple-pass-clipboard-timeout 30
+  "Seconds before a copied secret is removed from the kill ring.
+
+The timeout applies independently to each password or OTP copy."
+  :type 'number
+  :group 'simple-pass)
+
 (defun simple-pass--password-store-directory ()
   "Return the expanded password-store directory name."
   (file-name-as-directory
@@ -69,6 +76,30 @@ available, falling back to `~/.password-store'."
   (unless (and (integerp status) (zerop status))
     (user-error "%s failed (exit status %s)" program status)))
 
+(defun simple-pass--cleanup-kill-ring-cell (cell)
+  "Remove the exact kill-ring cons CELL and release its secret value."
+  (if (eq kill-ring cell)
+      (setq kill-ring (cdr cell))
+    (let ((tail kill-ring))
+      (while (and (consp tail) (not (eq (cdr tail) cell)))
+        (setq tail (cdr tail)))
+      (when (eq (cdr tail) cell)
+        (setcdr tail (cdr cell)))))
+  (setcar cell nil))
+
+(defun simple-pass--copy-to-kill-ring (secret)
+  "Copy SECRET to the kill ring and schedule bounded cleanup.
+
+Return SECRET.  Cleanup tracks the exact kill-ring cell introduced by
+`kill-new', rather than deleting equal-looking entries later."
+  (let ((old-kill-ring kill-ring))
+    (kill-new secret)
+    (unless (eq old-kill-ring kill-ring)
+      (run-at-time simple-pass-clipboard-timeout nil
+                   #'simple-pass--cleanup-kill-ring-cell
+                   kill-ring)))
+  secret)
+
 (defun simple-pass-entries ()
   "Return sorted, extension-free names of all pass entries.
 
@@ -90,13 +121,13 @@ unreadable."
 (defun simple-pass-copy (&optional entry)
   "Add ENTRY to the kill ring.
 
-Entry will be deleted from the kill ring within 30 seconds."
+Entry will be deleted from the kill ring after
+`simple-pass-clipboard-timeout' seconds."
   (interactive)
   (let* ((entry (simple-pass--require-entry
                  (or entry (completing-read "Select entry: " (simple-pass-entries)))))
 	 (pass (auth-source-pass-get 'secret entry)))
-    (kill-new pass)
-    (run-at-time 30 nil (lambda () (setq kill-ring (delete pass kill-ring))))))
+    (simple-pass--copy-to-kill-ring pass)))
 
 (defun simple-pass-generate ()
   "Generate new entry."
@@ -140,7 +171,7 @@ Entry will be deleted from the kill ring within 30 seconds."
            "pass otp show"
            (process-file "pass" nil buffer nil "otp" "show" entry))
           (with-current-buffer buffer
-            (kill-new (string-trim (buffer-string)))))
+            (simple-pass--copy-to-kill-ring (string-trim (buffer-string)))))
       (kill-buffer buffer))))
 
 (defmacro simple-pass-make-frame (name &rest body)

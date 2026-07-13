@@ -98,11 +98,46 @@
                  (with-current-buffer destination
                    (insert "123456\n"))
                  0))
-              ((symbol-function 'kill-new)
+              ((symbol-function 'simple-pass--copy-to-kill-ring)
                (lambda (value) (setq otp value))))
       (simple-pass-get-otp "weird;entry")
       (should (equal '("pass" "otp" "show" "weird;entry") arguments))
       (should (equal "123456" otp)))))
+
+(ert-deftest simple-pass-copy-cleans-up-only-its-kill-ring-cell ()
+  "Cleanup preserves unrelated equal-looking kill-ring entries."
+  (let ((existing (copy-sequence "same-secret"))
+        (unrelated (copy-sequence "same-secret"))
+        timer-function timer-arguments
+        (kill-ring nil)
+        (simple-pass-clipboard-timeout 12))
+    (setq kill-ring (list existing unrelated))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_delay _repeat function &rest arguments)
+                 (setq timer-function function
+                       timer-arguments arguments))))
+      (simple-pass--copy-to-kill-ring "same-secret")
+      (should (= 12 simple-pass-clipboard-timeout))
+      (should (eq existing (nth 1 kill-ring)))
+      (should (eq unrelated (nth 2 kill-ring)))
+      (should (eq (car timer-arguments) kill-ring))
+      (funcall timer-function (car timer-arguments))
+      (should (equal kill-ring (list existing unrelated)))
+      (should-not (car (car timer-arguments))))))
+
+(ert-deftest simple-pass-copy-schedules-each-repeated-copy-independently ()
+  "Repeated copies each remove only the cell they introduced."
+  (let (timers (kill-ring nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_delay _repeat function &rest arguments)
+                 (push (cons function arguments) timers))))
+      (simple-pass--copy-to-kill-ring "first")
+      (simple-pass--copy-to-kill-ring "second")
+      (should (= 2 (length timers)))
+      (funcall (caar (last timers)) (cadar (last timers)))
+      (should (equal '("second") kill-ring))
+      (funcall (caar timers) (cadar timers))
+      (should-not kill-ring))))
 
 (ert-deftest simple-pass-autotype-uses-argv ()
   "Autotype passes user and password as process arguments, not shell text."
