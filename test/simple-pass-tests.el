@@ -89,6 +89,40 @@
                      (butlast arguments 1)))
       (should (string-match-p "^[0-9]+$" (car (last arguments)))))))
 
+(ert-deftest simple-pass-generate-rejects-duplicate-entry ()
+  "Generation refuses to overwrite an existing entry."
+  (let (called)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "existing"))
+              ((symbol-function 'simple-pass-entries)
+               (lambda () '("existing")))
+              ((symbol-function 'process-file)
+               (lambda (&rest _)
+                 (setq called t))))
+      (should-error (simple-pass-generate) :type 'error)
+      (should-not called))))
+
+(ert-deftest simple-pass-generate-dispatches-copy-after-success ()
+  "Successful generation copies the new entry's secret."
+  (let (arguments copied entries-call)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "new-entry"))
+              ((symbol-function 'simple-pass-entries)
+               (lambda ()
+                 (setq entries-call (1+ (or entries-call 0)))
+                 (if (= entries-call 1) nil '("other-entry"))))
+              ((symbol-function 'process-file)
+               (lambda (program infile destination display &rest args)
+                 (setq arguments (cons program args))
+                 0))
+              ((symbol-function 'simple-pass-copy)
+               (lambda (entry)
+                 (setq copied entry))))
+      (simple-pass-generate)
+      (should (equal '("pass" "generate" "new-entry")
+                     (butlast arguments 1)))
+      (should (equal "new-entry" copied)))))
+
 (ert-deftest simple-pass-get-otp-uses-argv-and-trims-output ()
   "OTP retrieval does not build a shell command and trims its output."
   (let (arguments otp)
@@ -151,5 +185,21 @@
       (simple-pass-autotype "entry;name")
       (should (equal '("wtype" "-s" "300" "user;name" "-P" "tab" "pass$word")
                      arguments)))))
+
+(ert-deftest simple-pass-edit-dispatches-quoted-entry-to-with-editor ()
+  "Editing dispatches the selected entry through `with-editor'."
+  (let (command)
+    (cl-letf (((symbol-function 'with-editor-async-shell-command)
+               (lambda (value)
+                 (setq command value))))
+      (simple-pass-edit "weird;entry")
+      (should (equal "pass edit weird\\;entry" command)))))
+
+(ert-deftest simple-pass-launcher-dispatches-actions ()
+  "Launcher choices map to the corresponding public commands."
+  (should (eq #'simple-pass-autotype (simple-pass--launcher-action "AUTO")))
+  (should (eq #'simple-pass-copy (simple-pass--launcher-action "COPY PASS")))
+  (should (eq #'simple-pass-generate
+              (simple-pass--launcher-action "GENERATE"))))
 
 ;;; simple-pass-tests.el ends here

@@ -4,11 +4,11 @@
 
 ;; Author: Thanos Apollo <public@thanosapollo.org>
 ;; Keywords: extensions
-;; URL:
+;; URL: https://codeberg.org/ThanosApollo/simple-pass
 
 ;; Version: 0.0.1
 
-;; Package-Requires: ((emacs "27.2"))
+;; Package-Requires: ((emacs "27.2") (with-editor "0.1.0"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -25,12 +25,19 @@
 
 ;;; Commentary:
 
-;; Under Development
+;; simple-pass provides a small interactive front end for the `pass'
+;; password-store utility.  It discovers entries through Emacs file APIs,
+;; retrieves secrets through `auth-source-pass', and offers commands for
+;; copying passwords, retrieving OTPs, editing entries, and autotyping them.
+;; Copied secrets are removed from the kill ring after
+;; `simple-pass-clipboard-timeout' seconds.
 
 ;;; Code:
 
 (require 'auth-source-pass)
 (require 'subr-x)
+
+(declare-function with-editor-async-shell-command "with-editor" (command))
 
 (defgroup simple-pass nil
   "A small Emacs front end for pass."
@@ -189,16 +196,20 @@ Frame is automatically deleted after BODY execution."
            ,@body)
        (delete-frame frame))))
 
+(defun simple-pass--launcher-action (choice)
+  "Return the command corresponding to launcher CHOICE."
+  (pcase choice
+    ("AUTO" #'simple-pass-autotype)
+    ("COPY PASS" #'simple-pass-copy)
+    ("GENERATE" #'simple-pass-generate)))
+
 (defun simple-pass-launcher ()
   "Launch an Emacs frame as a front-end for pass."
   (interactive)
   (simple-pass-make-frame "emacs-float"
     (let* ((choice (completing-read "Choose an action: "
 				    '("AUTO" "COPY PASS" "GENERATE")))
-	   (action (pcase choice
-		     ("AUTO" #'simple-pass-autotype)
-		     ("COPY PASS" #'simple-pass-copy)
-		     ("GENERATE" #'simple-pass-generate))))
+	   (action (simple-pass--launcher-action choice)))
       (funcall action (completing-read "Search: " (simple-pass-entries))))))
 
 (provide 'simple-pass)
