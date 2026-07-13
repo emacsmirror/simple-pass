@@ -29,14 +29,51 @@
 
 ;;; Code:
 
+(require 'auth-source-pass)
+
+(defgroup simple-pass nil
+  "A small Emacs front end for pass."
+  :group 'external)
+
+(defcustom simple-pass-password-store-directory nil
+  "Directory containing the password-store entries.
+
+When nil, use `auth-source-pass-filename' when that variable is
+available, falling back to `~/.password-store'."
+  :type '(choice (const :tag "Use auth-source-pass" nil)
+                 directory)
+  :group 'simple-pass)
+
+(defun simple-pass--password-store-directory ()
+  "Return the expanded password-store directory name."
+  (file-name-as-directory
+   (expand-file-name
+    (or simple-pass-password-store-directory
+        (and (boundp 'auth-source-pass-filename)
+             auth-source-pass-filename)
+        "~/.password-store"))))
+
+(defun simple-pass--entry-name (file directory)
+  "Return the extension-free entry name for FILE under DIRECTORY."
+  (file-name-sans-extension (file-relative-name file directory)))
 
 (defun simple-pass-entries ()
-  "Return all pass entries."
-  (let ((entries (delete-dups
-		  (split-string
-		   (shell-command-to-string "find ~/.password-store -name '*.gpg' | sed 's|^.*/\\.password-store/||' | sed 's/\\.gpg$//'")
-		   "\n" t))))
-    entries))
+  "Return sorted, extension-free names of all pass entries.
+
+Signal a distinct error when the configured password store is missing or
+unreadable."
+  (let ((directory (simple-pass--password-store-directory)))
+    (cond
+     ((not (file-directory-p directory))
+      (error "Password store does not exist: %s" directory))
+     ((not (file-readable-p directory))
+      (error "Password store is not readable: %s" directory))
+     (t
+      (sort
+       (delete-dups
+        (mapcar (lambda (file) (simple-pass--entry-name file directory))
+                (directory-files-recursively directory "\\.gpg\\'")))
+       #'string-lessp)))))
 
 (defun simple-pass-copy (&optional entry)
   "Add ENTRY to the kill ring.
