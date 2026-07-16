@@ -144,12 +144,12 @@ will be deleted from the kill ring after
 
 When ENTRY is nil, prompt for the new entry name."
   (interactive)
-  (let* ((entry (simple-pass--require-entry
-                 (or entry
-                     (completing-read "New entry: " (simple-pass-entries)))))
+  (let* ((entries (simple-pass-entries))
+         (entry (simple-pass--require-entry
+                 (or entry (read-string "New entry: "))))
          (length (+ 14 (random 25))))
-    (if (member entry (simple-pass-entries))
-	(error "Entry already exists")
+    (if (member entry entries)
+        (error "Entry already exists")
       (simple-pass--process-error
        "pass generate"
        (process-file "pass" nil nil nil "generate" entry
