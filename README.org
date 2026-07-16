@@ -1,0 +1,41 @@
+#+title: simple-pass
+
+simple-pass is a small Emacs front end for the =pass= password store.
+
+* Installation
+
+simple-pass requires Emacs 27.2 or newer, =pass=, and the Emacs package
+=with-editor= 2.5.0 or newer.
+
+Place =simple-pass.el= on =load-path= and add:
+
+#+begin_src emacs-lisp
+(require 'simple-pass)
+#+end_src
+
+Install the =pass-otp= extension only to use =simple-pass-get-otp=.
+Install =wtype= only to use =simple-pass-autotype=.
+
+* Usage
+
+Run =M-x simple-pass-launcher= to open the launcher for copying,
+generating, or autotyping an entry.
+
+The principal commands are:
+
+- =M-x simple-pass-copy=
+- =M-x simple-pass-generate=
+- =M-x simple-pass-edit=
+- =M-x simple-pass-autotype=
+- =M-x simple-pass-get-otp=
+
+* Options
+
+- =simple-pass-password-store-directory= selects the password store.
+- =simple-pass-clipboard-timeout= controls how long copied secrets remain
+  in the kill ring.
+
+* License
+
+simple-pass is free software released under the GNU General Public License,
+version 3 or, at your option, any later version.  See =LICENSE=.
