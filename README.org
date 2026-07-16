@@ -26,7 +26,6 @@ The principal commands are:
 - =M-x simple-pass-copy=
 - =M-x simple-pass-generate=
 - =M-x simple-pass-edit=
-- =M-x simple-pass-autotype=
 - =M-x simple-pass-get-otp=
 
 * Options
