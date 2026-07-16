@@ -74,6 +74,21 @@
   (should-error (simple-pass-autotype "") :type 'user-error)
   (should-error (simple-pass-get-otp "") :type 'user-error))
 
+(ert-deftest simple-pass-copy-rejects-missing-secret ()
+  "A missing secret names its entry without touching the kill ring."
+  (let (kill-new-called)
+    (cl-letf (((symbol-function 'auth-source-pass-get)
+               (lambda (_field _entry) nil))
+              ((symbol-function 'kill-new)
+               (lambda (_string &optional _replace)
+                 (setq kill-new-called t))))
+      (let ((error-data
+             (should-error (simple-pass-copy "missing/account")
+                           :type 'user-error)))
+        (should (string-match-p "missing/account"
+                                (error-message-string error-data))))
+      (should-not kill-new-called))))
+
 (ert-deftest simple-pass-generate-uses-argv-and-reports-failure ()
   "Generation passes entry names as argv and reports process failures."
   (let (arguments)

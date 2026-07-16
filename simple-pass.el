@@ -126,14 +126,17 @@ unreadable."
        #'string-lessp)))))
 
 (defun simple-pass-copy (&optional entry)
-  "Add ENTRY to the kill ring.
+  "Add the secret for ENTRY to the kill ring.
 
-Entry will be deleted from the kill ring after
+Signal a user error naming ENTRY when it has no secret.  The copied secret
+will be deleted from the kill ring after
 `simple-pass-clipboard-timeout' seconds."
   (interactive)
   (let* ((entry (simple-pass--require-entry
                  (or entry (completing-read "Select entry: " (simple-pass-entries)))))
-	 (pass (auth-source-pass-get 'secret entry)))
+         (pass (auth-source-pass-get 'secret entry)))
+    (unless pass
+      (user-error "No secret found for pass entry: %s" entry))
     (simple-pass--copy-to-kill-ring pass)))
 
 (defun simple-pass-generate (&optional entry)
