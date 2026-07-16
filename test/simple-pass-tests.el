@@ -188,6 +188,18 @@
       (funcall (caar timers) (cadar timers))
       (should-not kill-ring))))
 
+(ert-deftest simple-pass-autotype-rejects-missing-secret-before-start-process ()
+  "Autotype rejects a missing secret before starting wtype."
+  (let (called)
+    (cl-letf (((symbol-function 'auth-source-pass-get)
+               (lambda (field _entry)
+                 (when (equal field "user") "user")))
+              ((symbol-function 'start-process)
+               (lambda (&rest _)
+                 (setq called t))))
+      (should-error (simple-pass-autotype "entry") :type 'user-error)
+      (should-not called))))
+
 (ert-deftest simple-pass-autotype-uses-argv ()
   "Autotype passes user and password as process arguments, not shell text."
   (let (arguments)

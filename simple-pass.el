@@ -165,11 +165,14 @@ When ENTRY is nil, prompt for the new entry name."
      (format "pass edit %s" (shell-quote-argument entry)))))
 
 (defun simple-pass-autotype (&optional entry)
-  "Autotype password ENTRY."
+  "Autotype password ENTRY.
+Signal a user error when ENTRY has no secret."
   (let* ((entry (simple-pass--require-entry
                  (or entry (completing-read "Select entry: " (simple-pass-entries)))))
 	 (user (or (auth-source-pass-get "user" entry) (file-name-base entry)))
 	 (pass (auth-source-pass-get 'secret entry)))
+    (unless pass
+      (user-error "No password found for %s" entry))
     (start-process "wtype" nil "wtype" "-s" "300" user "-P" "tab" pass)))
 
 (defun simple-pass-get-otp (&optional entry)
