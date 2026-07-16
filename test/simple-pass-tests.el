@@ -176,6 +176,22 @@
       (should (equal '("pass" "otp" "show" "weird;entry") arguments))
       (should (equal "123456" otp)))))
 
+(ert-deftest simple-pass-get-otp-rejects-empty-output ()
+  "Whitespace-only OTP output is rejected without changing the kill ring."
+  (let ((kill-ring '("existing")))
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (_program _infile destination _display &rest _args)
+                 (with-current-buffer destination
+                   (insert " \n\t"))
+                 0))
+              ((symbol-function 'run-at-time) #'ignore))
+      (let ((error-data
+             (should-error (simple-pass-get-otp "empty-otp")
+                           :type 'user-error)))
+        (should (string-match-p "No OTP returned"
+                                (error-message-string error-data))))
+      (should (equal '("existing") kill-ring)))))
+
 (ert-deftest simple-pass-copy-cleans-up-only-its-kill-ring-cell ()
   "Cleanup preserves unrelated equal-looking kill-ring entries."
   (let ((existing (copy-sequence "same-secret"))

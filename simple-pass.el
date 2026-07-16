@@ -187,7 +187,10 @@ Signal a user error when ENTRY has no secret."
            "pass otp show"
            (process-file "pass" nil buffer nil "otp" "show" entry))
           (with-current-buffer buffer
-            (simple-pass--copy-to-kill-ring (string-trim (buffer-string)))))
+            (let ((otp (string-trim (buffer-string))))
+              (if (string-empty-p otp)
+                  (user-error "No OTP returned for %s" entry)
+                (simple-pass--copy-to-kill-ring otp)))))
       (kill-buffer buffer))))
 
 (defmacro simple-pass-make-frame (name &rest body)
