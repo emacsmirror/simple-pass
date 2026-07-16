@@ -136,11 +136,14 @@ Entry will be deleted from the kill ring after
 	 (pass (auth-source-pass-get 'secret entry)))
     (simple-pass--copy-to-kill-ring pass)))
 
-(defun simple-pass-generate ()
-  "Generate new entry."
+(defun simple-pass-generate (&optional entry)
+  "Generate new pass ENTRY.
+
+When ENTRY is nil, prompt for the new entry name."
   (interactive)
   (let* ((entry (simple-pass--require-entry
-                 (completing-read "New entry: " (simple-pass-entries))))
+                 (or entry
+                     (completing-read "New entry: " (simple-pass-entries)))))
          (length (+ 14 (random 25))))
     (if (member entry (simple-pass-entries))
 	(error "Entry already exists")

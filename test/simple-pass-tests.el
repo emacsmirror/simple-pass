@@ -195,6 +195,22 @@
       (simple-pass-edit "weird;entry")
       (should (equal "pass edit weird\\;entry" command)))))
 
+(ert-deftest simple-pass-launcher-generate-reaches-generation-body ()
+  "Launcher-selected generation accepts an entry and runs its body."
+  (let (arguments copied)
+    (cl-letf (((symbol-function 'simple-pass-entries) (lambda () nil))
+              ((symbol-function 'process-file)
+               (lambda (program _infile _destination _display &rest args)
+                 (setq arguments (cons program args))
+                 0))
+              ((symbol-function 'simple-pass-copy)
+               (lambda (entry)
+                 (setq copied entry))))
+      (funcall (simple-pass--launcher-action "GENERATE") "new-entry")
+      (should (equal '("pass" "generate" "new-entry")
+                     (butlast arguments 1)))
+      (should (equal "new-entry" copied)))))
+
 (ert-deftest simple-pass-launcher-dispatches-actions ()
   "Launcher choices map to the corresponding public commands."
   (should (eq #'simple-pass-autotype (simple-pass--launcher-action "AUTO")))
