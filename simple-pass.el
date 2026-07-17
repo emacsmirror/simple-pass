@@ -222,7 +222,9 @@ Frame is automatically deleted after BODY execution."
     (let* ((choice (completing-read "Choose an action: "
 				    '("AUTO" "COPY PASS" "GENERATE")))
 	   (action (simple-pass--launcher-action choice)))
-      (funcall action (completing-read "Search: " (simple-pass-entries))))))
+      (if (eq action #'simple-pass-generate)
+          (funcall action)
+        (funcall action (completing-read "Search: " (simple-pass-entries)))))))
 
 (provide 'simple-pass)
 ;;; simple-pass.el ends here
