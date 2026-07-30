@@ -4,7 +4,7 @@
 
 ;; Author: Thanos Apollo <public@thanosapollo.org>
 ;; Keywords: extensions
-;; URL: https://codeberg.org/ThanosApollo/simple-pass
+;; URL: https://git.thanosapollo.org/simple-pass/
 
 ;; Version: 0.0.1
 
