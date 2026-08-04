@@ -21,14 +21,26 @@
       (make-empty-file file))))
 
 (defun simple-pass-test--write-process-destination (destination stdout &optional stderr)
-  "Write STDOUT/STDERR into DESTINATION buffers from `process-file'."
-  (when (consp destination)
-    (when (and stdout (buffer-live-p (car destination)))
-      (with-current-buffer (car destination)
-        (insert stdout)))
-    (when (and stderr (buffer-live-p (cadr destination)))
-      (with-current-buffer (cadr destination)
-        (insert stderr)))))
+  "Write STDOUT/STDERR into DESTINATION from `process-file'.
+
+DESTINATION is either a buffer or (REAL-BUFFER STDERR-FILE) as used by
+`call-process'/`process-file'."
+  (cond
+   ((bufferp destination)
+    (when stdout
+      (with-current-buffer destination
+        (insert stdout))))
+   ((consp destination)
+    (let ((stdout-dest (car destination))
+          (stderr-dest (cadr destination)))
+      (when (and stdout (eq stdout-dest t))
+        (insert stdout))
+      (when (and stdout (buffer-live-p stdout-dest))
+        (with-current-buffer stdout-dest
+          (insert stdout)))
+      (when (and stderr (stringp stderr-dest))
+        (with-temp-file stderr-dest
+          (insert stderr)))))))
 
 (ert-deftest simple-pass-entries-discovers-normalized-sorted-unique-entries ()
   "Entries are recursive, extension-free, deterministic, and unique."
@@ -554,6 +566,52 @@
                                  'secret "acct")
                            seen))))
       (delete-directory directory t))))
+
+(ert-deftest simple-pass-call-pass-separates-real-process-streams ()
+  "Unmocked process-file keeps stdout payload and stderr diagnostics apart."
+  (let* ((bin (make-temp-file "simple-pass-bin-" t))
+         (pass (expand-file-name "pass" bin))
+         (exec-path (cons bin exec-path))
+         (simple-pass-password-store-directory
+          (make-temp-file "simple-pass-store-" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file pass
+            (insert "#!/bin/sh\n")
+            (insert "echo '123456'\n")
+            (insert "echo 'gpg: warning noise' 1>&2\n")
+            (insert "exit 0\n"))
+          (set-file-modes pass #o700)
+          (pcase-let ((`(,status ,stdout ,stderr)
+                       (simple-pass--call-pass "otp" "show" "entry")))
+            (should (equal 0 status))
+            (should (equal "123456\n" stdout))
+            (should (string-match-p "warning noise" stderr)))
+          (with-temp-file pass
+            (insert "#!/bin/sh\n")
+            (insert "echo 'The generated password for x is SuperSecret123'\n")
+            (insert "echo 'store boom' 1>&2\n")
+            (insert "exit 2\n"))
+          (set-file-modes pass #o700)
+          (pcase-let ((`(,status ,stdout ,stderr)
+                       (simple-pass--call-pass "generate" "x" "20")))
+            (should (equal 2 status))
+            (should (string-match-p "SuperSecret123" stdout))
+            (should (string-match-p "store boom" stderr)))
+          (let ((error-data
+                 (should-error
+                  (cl-letf (((symbol-function 'simple-pass-entries)
+                             (lambda () nil))
+                            ((symbol-function 'read-string)
+                             (lambda (&rest _) "x")))
+                    (simple-pass-generate))
+                  :type 'user-error)))
+            (should (string-match-p "store boom"
+                                    (error-message-string error-data)))
+            (should-not (string-match-p "SuperSecret123"
+                                        (error-message-string error-data)))))
+      (delete-directory bin t)
+      (delete-directory simple-pass-password-store-directory t))))
 
 (ert-deftest simple-pass-loads-with-editor ()
   "with-editor is a hard load dependency."

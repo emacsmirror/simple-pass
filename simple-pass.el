@@ -134,17 +134,18 @@ echo secrets from stdout."
   (simple-pass--require-executable "pass")
   (simple-pass--with-store-env
    (lambda ()
-     (with-temp-buffer
-       (let ((stdout-buffer (current-buffer)))
-         (with-temp-buffer
-           (let* ((stderr-buffer (current-buffer))
-                  (status (apply #'process-file "pass" nil
-                                 (list stdout-buffer stderr-buffer)
-                                 nil args))
-                  (stdout (with-current-buffer stdout-buffer
-                            (buffer-string)))
-                  (stderr (buffer-string)))
-             (list status stdout stderr))))))))
+     (let ((stderr-file (make-temp-file "simple-pass-stderr-")))
+       (unwind-protect
+           (with-temp-buffer
+             (let* ((status (apply #'process-file "pass" nil
+                                   (list t stderr-file)
+                                   nil args))
+                    (stdout (buffer-string))
+                    (stderr (with-temp-buffer
+                              (insert-file-contents stderr-file)
+                              (buffer-string))))
+               (list status stdout stderr)))
+         (ignore-errors (delete-file stderr-file)))))))
 
 (defun simple-pass--cleanup-kill-ring-cell (cell)
   "Remove the exact kill-ring cons CELL and release its secret value.
