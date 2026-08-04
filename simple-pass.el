@@ -264,17 +264,17 @@ When ENTRY is nil, prompt for the new entry name."
 Signal a user error when ENTRY has no secret, when wtype is missing,
 or when wtype exits nonzero."
   (interactive)
-  (let* ((entry (simple-pass--resolve-entry entry "Select entry: "))
-         (user (or (simple-pass--get-secret entry "user")
-                   (file-name-base entry)))
-         (pass (simple-pass--get-secret entry)))
-    (unless pass
-      (user-error "No password found for %s" entry))
+  (let ((entry (simple-pass--resolve-entry entry "Select entry: ")))
     (simple-pass--require-executable "wtype")
-    (simple-pass--process-error
-     "wtype"
-     (call-process "wtype" nil nil nil
-                   "-s" "300" user "-P" "tab" pass))))
+    (let* ((user (or (simple-pass--get-secret entry "user")
+                     (file-name-base entry)))
+           (pass (simple-pass--get-secret entry)))
+      (unless pass
+        (user-error "No password found for %s" entry))
+      (simple-pass--process-error
+       "wtype"
+       (call-process "wtype" nil nil nil
+                     "-s" "300" user "-P" "tab" pass)))))
 
 (defun simple-pass-get-otp (&optional entry)
   "Get OTP for ENTRY."
