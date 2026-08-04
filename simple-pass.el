@@ -152,15 +152,22 @@ echo secrets from stdout."
 
 When CELL is at the head of the kill ring and
 `interprogram-cut-function' is non-nil, also clear the system
-selection."
-  (let ((was-head (eq kill-ring cell)))
-    (if (eq kill-ring cell)
-        (setq kill-ring (cdr cell))
+selection.  Keep `kill-ring-yank-pointer' on a live kill-ring cons."
+  (let ((was-head (eq kill-ring cell))
+        (successor (cdr cell)))
+    (if was-head
+        (setq kill-ring successor)
       (let ((tail kill-ring))
         (while (and (consp tail) (not (eq (cdr tail) cell)))
           (setq tail (cdr tail)))
         (when (eq (cdr tail) cell)
-          (setcdr tail (cdr cell)))))
+          (setcdr tail successor))))
+    (when (boundp 'kill-ring-yank-pointer)
+      (cond
+       ((eq kill-ring-yank-pointer cell)
+        (setq kill-ring-yank-pointer (or successor kill-ring)))
+       ((null kill-ring)
+        (setq kill-ring-yank-pointer nil))))
     (setcar cell nil)
     (when (and was-head
                (boundp 'interprogram-cut-function)
@@ -170,20 +177,15 @@ selection."
 (defun simple-pass--copy-to-kill-ring (secret)
   "Copy SECRET to the kill ring and schedule bounded cleanup.
 
-Return SECRET.  Cleanup tracks the kill-ring cell that holds SECRET
-after `kill-new', including when `kill-do-not-save-duplicates'
-suppresses a new push."
-  (let ((old-kill-ring kill-ring))
+Return SECRET.  Always introduce a package-owned kill-ring cell, even
+when `kill-do-not-save-duplicates' would otherwise suppress `kill-new'."
+  (let ((kill-do-not-save-duplicates nil)
+        (old-kill-ring kill-ring))
     (kill-new secret)
-    (let ((cell (cond
-                 ((not (eq old-kill-ring kill-ring)) kill-ring)
-                 ((and (consp kill-ring)
-                       (equal (car kill-ring) secret))
-                  kill-ring))))
-      (when cell
-        (run-at-time simple-pass-clipboard-timeout nil
-                     #'simple-pass--cleanup-kill-ring-cell
-                     cell))))
+    (when (not (eq old-kill-ring kill-ring))
+      (run-at-time simple-pass-clipboard-timeout nil
+                   #'simple-pass--cleanup-kill-ring-cell
+                   kill-ring)))
   secret)
 
 (defun simple-pass--get-secret (entry &optional field)

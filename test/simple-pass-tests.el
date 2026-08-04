@@ -307,6 +307,26 @@ DESTINATION is either a buffer or (REAL-BUFFER STDERR-FILE) as used by
       (should (equal kill-ring (list existing unrelated)))
       (should-not (car (car timer-arguments))))))
 
+(ert-deftest simple-pass-cleanup-repairs-kill-ring-yank-pointer ()
+  "After head cleanup, yank pointer tracks the live kill-ring head."
+  (let (timer-function timer-arguments
+        (kill-ring nil)
+        (kill-ring-yank-pointer nil)
+        (interprogram-cut-function nil)
+        (simple-pass-clipboard-timeout 4))
+    (setq kill-ring (list (copy-sequence "x") (copy-sequence "y")))
+    (setq kill-ring-yank-pointer kill-ring)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_delay _repeat function &rest arguments)
+                 (setq timer-function function
+                       timer-arguments arguments))))
+      (simple-pass--copy-to-kill-ring "secret")
+      (should (eq kill-ring-yank-pointer kill-ring))
+      (funcall timer-function (car timer-arguments))
+      (should (equal '("x" "y") kill-ring))
+      (should (eq kill-ring-yank-pointer kill-ring))
+      (should (equal "x" (current-kill 0 t))))))
+
 (ert-deftest simple-pass-copy-schedules-each-repeated-copy-independently ()
   "Repeated copies each remove only the cell they introduced."
   (let (timers (kill-ring nil) (interprogram-cut-function nil))
@@ -322,11 +342,12 @@ DESTINATION is either a buffer or (REAL-BUFFER STDERR-FILE) as used by
       (should-not kill-ring))))
 
 (ert-deftest simple-pass-copy-schedules-when-duplicates-suppressed ()
-  "Cleanup still runs when kill-do-not-save-duplicates suppresses kill-new."
+  "Secret copies force a new kill-ring cell even with duplicates-on."
   (let* ((cut-box (list nil))
          timers
          (kill-do-not-save-duplicates t)
-         (kill-ring (list (copy-sequence "same")))
+         (existing (copy-sequence "same"))
+         (kill-ring (list existing))
          (interprogram-cut-function
           (lambda (text &optional _push)
             (setcar cut-box (cons text (car cut-box)))))
@@ -336,9 +357,11 @@ DESTINATION is either a buffer or (REAL-BUFFER STDERR-FILE) as used by
                  (push (cons function arguments) timers))))
       (simple-pass--copy-to-kill-ring "same")
       (should (= 1 (length timers)))
-      (should (equal '("same") kill-ring))
+      (should (equal '("same" "same") kill-ring))
+      (should-not (eq existing (car kill-ring)))
       (funcall (caar timers) (cadar timers))
-      (should-not kill-ring)
+      (should (equal '("same") kill-ring))
+      (should (eq existing (car kill-ring)))
       (should (member "" (car cut-box))))))
 
 (ert-deftest simple-pass-copy-clears-interprogram-cut-when-head ()
