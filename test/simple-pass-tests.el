@@ -20,6 +20,16 @@
     (let ((file-name-handler-alist nil))
       (make-empty-file file))))
 
+(defun simple-pass-test--write-process-destination (destination stdout &optional stderr)
+  "Write STDOUT/STDERR into DESTINATION buffers from `process-file'."
+  (when (consp destination)
+    (when (and stdout (buffer-live-p (car destination)))
+      (with-current-buffer (car destination)
+        (insert stdout)))
+    (when (and stderr (buffer-live-p (cadr destination)))
+      (with-current-buffer (cadr destination)
+        (insert stderr)))))
+
 (ert-deftest simple-pass-entries-discovers-normalized-sorted-unique-entries ()
   "Entries are recursive, extension-free, deterministic, and unique."
   (let ((directory (make-temp-file "simple-pass-" t)))
@@ -179,7 +189,7 @@
       (should (equal "new-entry" copied)))))
 
 (ert-deftest simple-pass-generate-surfaces-stderr-on-failure ()
-  "Failed generate includes captured process body in the user-error."
+  "Failed generate includes stderr in the user-error, not stdout secrets."
   (cl-letf (((symbol-function 'read-string)
              (lambda (&rest _) "new-entry"))
             ((symbol-function 'simple-pass-entries) (lambda () nil))
@@ -187,13 +197,16 @@
              (lambda (_) "pass"))
             ((symbol-function 'process-file)
              (lambda (_program _infile destination _display &rest _args)
-               (when (consp destination)
-                 (with-current-buffer (current-buffer)
-                   (insert "gpg: decryption failed\n")))
+               (simple-pass-test--write-process-destination
+                destination
+                "The generated password for new-entry is SuperSecret123\n"
+                "gpg: decryption failed\n")
                2)))
     (let ((error-data (should-error (simple-pass-generate) :type 'user-error)))
       (should (string-match-p "decryption failed"
-                              (error-message-string error-data))))))
+                              (error-message-string error-data)))
+      (should-not (string-match-p "SuperSecret123"
+                                  (error-message-string error-data))))))
 
 (ert-deftest simple-pass-get-otp-uses-argv-and-trims-output ()
   "OTP retrieval does not build a shell command and trims its output."
@@ -201,15 +214,30 @@
     (cl-letf (((symbol-function 'executable-find)
                (lambda (program) program))
               ((symbol-function 'process-file)
-               (lambda (program _infile _destination _display &rest args)
+               (lambda (program _infile destination _display &rest args)
                  (setq arguments (cons program args))
-                 (with-current-buffer (current-buffer)
-                   (insert "123456\n"))
+                 (simple-pass-test--write-process-destination
+                  destination "123456\n")
                  0))
               ((symbol-function 'simple-pass--copy-to-kill-ring)
                (lambda (value) (setq otp value))))
       (simple-pass-get-otp "weird;entry")
       (should (equal '("pass" "otp" "show" "weird;entry") arguments))
+      (should (equal "123456" otp)))))
+
+(ert-deftest simple-pass-get-otp-ignores-stderr-noise-on-success ()
+  "Successful OTP copies only stdout, ignoring stderr diagnostics."
+  (let (otp)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_) "pass"))
+              ((symbol-function 'process-file)
+               (lambda (_program _infile destination _display &rest _args)
+                 (simple-pass-test--write-process-destination
+                  destination "123456\n" "gpg: warning: something\n")
+                 0))
+              ((symbol-function 'simple-pass--copy-to-kill-ring)
+               (lambda (value) (setq otp value))))
+      (simple-pass-get-otp "entry")
       (should (equal "123456" otp)))))
 
 (ert-deftest simple-pass-get-otp-rejects-empty-output ()
@@ -218,8 +246,9 @@
     (cl-letf (((symbol-function 'executable-find)
                (lambda (_) "pass"))
               ((symbol-function 'process-file)
-               (lambda (_program _infile _destination _display &rest _args)
-                 (insert " \n\t")
+               (lambda (_program _infile destination _display &rest _args)
+                 (simple-pass-test--write-process-destination
+                  destination " \n\t")
                  0))
               ((symbol-function 'run-at-time) #'ignore))
       (let ((error-data
@@ -230,12 +259,13 @@
       (should (equal '("existing") kill-ring)))))
 
 (ert-deftest simple-pass-get-otp-surfaces-stderr-on-failure ()
-  "Failed OTP includes captured process body in the user-error."
+  "Failed OTP includes stderr in the user-error."
   (cl-letf (((symbol-function 'executable-find)
              (lambda (_) "pass"))
             ((symbol-function 'process-file)
-             (lambda (_program _infile _destination _display &rest _args)
-               (insert "Error: otp is not in the password store.\n")
+             (lambda (_program _infile destination _display &rest _args)
+               (simple-pass-test--write-process-destination
+                destination "" "Error: otp is not in the password store.\n")
                1)))
     (let ((error-data
            (should-error (simple-pass-get-otp "missing")
@@ -317,6 +347,28 @@
       (funcall timer-function (car timer-arguments))
       (should-not kill-ring)
       (should (member "" (car cut-box))))))
+
+(ert-deftest simple-pass-copy-skips-interprogram-clear-when-not-head ()
+  "Timeout does not clear system selection when another kill sits on top."
+  (let* ((cut-box (list nil))
+         timer-function timer-arguments
+         (kill-ring nil)
+         (interprogram-cut-function
+          (lambda (text &optional _push)
+            (setcar cut-box (cons text (car cut-box)))))
+         (simple-pass-clipboard-timeout 3))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_delay _repeat function &rest arguments)
+                 (setq timer-function function
+                       timer-arguments arguments))))
+      (simple-pass--copy-to-kill-ring "secret")
+      (let ((owned (car timer-arguments)))
+        (kill-new "later")
+        (setq cut-box (list nil))
+        (funcall timer-function owned)
+        (should (equal '("later") kill-ring))
+        (should-not (member "" (car cut-box)))))))
+
 (ert-deftest simple-pass-autotype-rejects-missing-secret-before-start-process ()
   "Autotype rejects a missing secret before starting wtype."
   (let (called)

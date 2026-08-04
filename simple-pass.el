@@ -127,14 +127,24 @@ When BODY is non-empty, include a short snippet in the message."
 (defun simple-pass--call-pass (&rest args)
   "Run pass with ARGS under the configured store directory.
 
-Capture mixed stdout/stderr.  Return (STATUS . OUTPUT).  Signal a
-user error when the pass executable is missing."
+Return (STATUS STDOUT STDERR).  Signal a user error when the pass
+executable is missing.  Stdout and stderr stay separate so success
+paths never treat diagnostics as payload and failure messages never
+echo secrets from stdout."
   (simple-pass--require-executable "pass")
   (simple-pass--with-store-env
    (lambda ()
      (with-temp-buffer
-       (cons (apply #'process-file "pass" nil (list t t) nil args)
-             (buffer-string))))))
+       (let ((stdout-buffer (current-buffer)))
+         (with-temp-buffer
+           (let* ((stderr-buffer (current-buffer))
+                  (status (apply #'process-file "pass" nil
+                                 (list stdout-buffer stderr-buffer)
+                                 nil args))
+                  (stdout (with-current-buffer stdout-buffer
+                            (buffer-string)))
+                  (stderr (buffer-string)))
+             (list status stdout stderr))))))))
 
 (defun simple-pass--cleanup-kill-ring-cell (cell)
   "Remove the exact kill-ring cons CELL and release its secret value.
@@ -229,10 +239,10 @@ When ENTRY is nil, prompt for the new entry name."
          (length (+ 14 (random 25))))
     (if (member entry entries)
         (user-error "Entry already exists")
-      (pcase-let ((`(,status . ,output)
+      (pcase-let ((`(,status ,_stdout ,stderr)
                    (simple-pass--call-pass
                     "generate" entry (number-to-string length))))
-        (simple-pass--process-error "pass generate" status output)
+        (simple-pass--process-error "pass generate" status stderr)
         (simple-pass-copy entry)))))
 
 (defun simple-pass-edit (&optional entry)
@@ -267,9 +277,10 @@ or when wtype exits nonzero."
   "Get OTP for ENTRY."
   (interactive)
   (let ((entry (simple-pass--resolve-entry entry "Select otp entry: ")))
-    (pcase-let ((`(,status . ,output) (simple-pass--call-pass "otp" "show" entry)))
-      (simple-pass--process-error "pass otp show" status output)
-      (let ((otp (string-trim output)))
+    (pcase-let ((`(,status ,stdout ,stderr)
+                 (simple-pass--call-pass "otp" "show" entry)))
+      (simple-pass--process-error "pass otp show" status stderr)
+      (let ((otp (string-trim stdout)))
         (if (string-empty-p otp)
             (user-error "No OTP returned for %s" entry)
           (simple-pass--copy-to-kill-ring otp))))))
