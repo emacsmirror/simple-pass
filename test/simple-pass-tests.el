@@ -2,6 +2,15 @@
 
 (require 'ert)
 (require 'cl-lib)
+
+;; Provide a minimal with-editor stub when the real package is absent so
+;; batch tests match the documented load-path install path.
+(unless (require 'with-editor nil t)
+  (defun with-editor-async-shell-command (command)
+    "Test stub for with-editor when the package is not installed."
+    command)
+  (provide 'with-editor))
+
 (require 'simple-pass)
 
 (defun simple-pass-test--write-entry (directory name)
@@ -39,20 +48,20 @@
       (delete-directory directory t))))
 
 (ert-deftest simple-pass-entries-reports-missing-store ()
-  "A missing store gets a clear error."
+  "A missing store gets a clear user-error."
   (let ((directory (expand-file-name "simple-pass-does-not-exist" temporary-file-directory))
         (simple-pass-password-store-directory nil))
     (let ((auth-source-pass-filename directory))
       (should-error (simple-pass-entries)
-                    :type 'error)
+                    :type 'user-error)
       (condition-case error-data
           (simple-pass-entries)
-        (error
+        (user-error
          (should (string-match-p "Password store does not exist"
                                  (error-message-string error-data))))))))
 
 (ert-deftest simple-pass-entries-reports-unreadable-store ()
-  "An unreadable store gets a distinct clear error."
+  "An unreadable store gets a distinct clear user-error."
   (let ((directory (make-temp-file "simple-pass-" t)))
     (unwind-protect
         (progn
@@ -61,7 +70,7 @@
             (let ((simple-pass-password-store-directory directory))
               (condition-case error-data
                   (simple-pass-entries)
-                (error
+                (user-error
                  (should (string-match-p "Password store is not readable"
                                          (error-message-string error-data))))))))
       (set-file-modes directory #o700)
@@ -101,6 +110,8 @@
                  (ert-fail "Generation must use a free-text prompt")))
               ((symbol-function 'simple-pass-entries)
                (lambda () '("existing")))
+              ((symbol-function 'executable-find)
+               (lambda (program) program))
               ((symbol-function 'process-file)
                (lambda (program _infile _destination _display &rest args)
                  (setq arguments (cons program args))
@@ -120,6 +131,8 @@
     (cl-letf (((symbol-function 'read-string)
                (lambda (&rest _) "weird;entry"))
               ((symbol-function 'simple-pass-entries) (lambda () nil))
+              ((symbol-function 'executable-find)
+               (lambda (program) program))
               ((symbol-function 'process-file)
                (lambda (program _infile _destination _display &rest args)
                  (setq arguments (cons program args))
@@ -138,8 +151,10 @@
                (lambda () '("existing")))
               ((symbol-function 'process-file)
                (lambda (&rest _)
-                 (setq called t))))
-      (should-error (simple-pass-generate) :type 'error)
+                 (setq called t)))
+              ((symbol-function 'executable-find)
+               (lambda (_) "pass")))
+      (should-error (simple-pass-generate) :type 'user-error)
       (should-not called))))
 
 (ert-deftest simple-pass-generate-dispatches-copy-after-success ()
@@ -149,6 +164,8 @@
                (lambda (&rest _) "new-entry"))
               ((symbol-function 'simple-pass-entries)
                (lambda () nil))
+              ((symbol-function 'executable-find)
+               (lambda (program) program))
               ((symbol-function 'process-file)
                (lambda (program _infile _destination _display &rest args)
                  (setq arguments (cons program args))
@@ -161,13 +178,32 @@
                      (butlast arguments 1)))
       (should (equal "new-entry" copied)))))
 
+(ert-deftest simple-pass-generate-surfaces-stderr-on-failure ()
+  "Failed generate includes captured process body in the user-error."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _) "new-entry"))
+            ((symbol-function 'simple-pass-entries) (lambda () nil))
+            ((symbol-function 'executable-find)
+             (lambda (_) "pass"))
+            ((symbol-function 'process-file)
+             (lambda (_program _infile destination _display &rest _args)
+               (when (consp destination)
+                 (with-current-buffer (current-buffer)
+                   (insert "gpg: decryption failed\n")))
+               2)))
+    (let ((error-data (should-error (simple-pass-generate) :type 'user-error)))
+      (should (string-match-p "decryption failed"
+                              (error-message-string error-data))))))
+
 (ert-deftest simple-pass-get-otp-uses-argv-and-trims-output ()
   "OTP retrieval does not build a shell command and trims its output."
   (let (arguments otp)
-    (cl-letf (((symbol-function 'process-file)
-               (lambda (program _infile destination _display &rest args)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (program) program))
+              ((symbol-function 'process-file)
+               (lambda (program _infile _destination _display &rest args)
                  (setq arguments (cons program args))
-                 (with-current-buffer destination
+                 (with-current-buffer (current-buffer)
                    (insert "123456\n"))
                  0))
               ((symbol-function 'simple-pass--copy-to-kill-ring)
@@ -179,10 +215,11 @@
 (ert-deftest simple-pass-get-otp-rejects-empty-output ()
   "Whitespace-only OTP output is rejected without changing the kill ring."
   (let ((kill-ring '("existing")))
-    (cl-letf (((symbol-function 'process-file)
-               (lambda (_program _infile destination _display &rest _args)
-                 (with-current-buffer destination
-                   (insert " \n\t"))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_) "pass"))
+              ((symbol-function 'process-file)
+               (lambda (_program _infile _destination _display &rest _args)
+                 (insert " \n\t")
                  0))
               ((symbol-function 'run-at-time) #'ignore))
       (let ((error-data
@@ -192,13 +229,28 @@
                                 (error-message-string error-data))))
       (should (equal '("existing") kill-ring)))))
 
+(ert-deftest simple-pass-get-otp-surfaces-stderr-on-failure ()
+  "Failed OTP includes captured process body in the user-error."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_) "pass"))
+            ((symbol-function 'process-file)
+             (lambda (_program _infile _destination _display &rest _args)
+               (insert "Error: otp is not in the password store.\n")
+               1)))
+    (let ((error-data
+           (should-error (simple-pass-get-otp "missing")
+                         :type 'user-error)))
+      (should (string-match-p "not in the password store"
+                              (error-message-string error-data))))))
+
 (ert-deftest simple-pass-copy-cleans-up-only-its-kill-ring-cell ()
   "Cleanup preserves unrelated equal-looking kill-ring entries."
   (let ((existing (copy-sequence "same-secret"))
         (unrelated (copy-sequence "same-secret"))
         timer-function timer-arguments
         (kill-ring nil)
-        (simple-pass-clipboard-timeout 12))
+        (simple-pass-clipboard-timeout 12)
+        (interprogram-cut-function nil))
     (setq kill-ring (list existing unrelated))
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_delay _repeat function &rest arguments)
@@ -215,7 +267,7 @@
 
 (ert-deftest simple-pass-copy-schedules-each-repeated-copy-independently ()
   "Repeated copies each remove only the cell they introduced."
-  (let (timers (kill-ring nil))
+  (let (timers (kill-ring nil) (interprogram-cut-function nil))
     (cl-letf (((symbol-function 'run-at-time)
                (lambda (_delay _repeat function &rest arguments)
                  (push (cons function arguments) timers))))
@@ -227,15 +279,59 @@
       (funcall (caar timers) (cadar timers))
       (should-not kill-ring))))
 
+(ert-deftest simple-pass-copy-schedules-when-duplicates-suppressed ()
+  "Cleanup still runs when kill-do-not-save-duplicates suppresses kill-new."
+  (let* ((cut-box (list nil))
+         timers
+         (kill-do-not-save-duplicates t)
+         (kill-ring (list (copy-sequence "same")))
+         (interprogram-cut-function
+          (lambda (text &optional _push)
+            (setcar cut-box (cons text (car cut-box)))))
+         (simple-pass-clipboard-timeout 5))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_delay _repeat function &rest arguments)
+                 (push (cons function arguments) timers))))
+      (simple-pass--copy-to-kill-ring "same")
+      (should (= 1 (length timers)))
+      (should (equal '("same") kill-ring))
+      (funcall (caar timers) (cadar timers))
+      (should-not kill-ring)
+      (should (member "" (car cut-box))))))
+
+(ert-deftest simple-pass-copy-clears-interprogram-cut-when-head ()
+  "Timeout clears system selection when the cleaned cell was head."
+  (let* ((cut-box (list nil))
+         timer-function timer-arguments
+         (kill-ring nil)
+         (interprogram-cut-function
+          (lambda (text &optional _push)
+            (setcar cut-box (cons text (car cut-box)))))
+         (simple-pass-clipboard-timeout 3))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_delay _repeat function &rest arguments)
+                 (setq timer-function function
+                       timer-arguments arguments))))
+      (simple-pass--copy-to-kill-ring "secret")
+      (should (equal '("secret") kill-ring))
+      (funcall timer-function (car timer-arguments))
+      (should-not kill-ring)
+      (should (member "" (car cut-box))))))
 (ert-deftest simple-pass-autotype-rejects-missing-secret-before-start-process ()
   "Autotype rejects a missing secret before starting wtype."
   (let (called)
     (cl-letf (((symbol-function 'auth-source-pass-get)
                (lambda (field _entry)
                  (when (equal field "user") "user")))
+              ((symbol-function 'call-process)
+               (lambda (&rest _)
+                 (setq called t)
+                 0))
               ((symbol-function 'start-process)
                (lambda (&rest _)
-                 (setq called t))))
+                 (setq called t)))
+              ((symbol-function 'executable-find)
+               (lambda (_) "wtype")))
       (should-error (simple-pass-autotype "entry") :type 'user-error)
       (should-not called))))
 
@@ -245,26 +341,95 @@
     (cl-letf (((symbol-function 'auth-source-pass-get)
                (lambda (field _entry)
                  (if (equal field "user") "user;name" "pass$word")))
-              ((symbol-function 'start-process)
-               (lambda (_name _buffer program &rest args)
-                 (setq arguments (cons program args)))))
+              ((symbol-function 'executable-find)
+               (lambda (_) "wtype"))
+              ((symbol-function 'call-process)
+               (lambda (program _infile _destination _display &rest args)
+                 (setq arguments (cons program args))
+                 0)))
       (simple-pass-autotype "entry;name")
       (should (equal '("wtype" "-s" "300" "user;name" "-P" "tab" "pass$word")
                      arguments)))))
 
+(ert-deftest simple-pass-autotype-rejects-missing-wtype ()
+  "Missing wtype is a user-error before any process starts."
+  (let (called)
+    (cl-letf (((symbol-function 'auth-source-pass-get)
+               (lambda (field _entry)
+                 (if (equal field "user") "user" "secret")))
+              ((symbol-function 'executable-find)
+               (lambda (_) nil))
+              ((symbol-function 'call-process)
+               (lambda (&rest _)
+                 (setq called t)
+                 0)))
+      (let ((error-data
+             (should-error (simple-pass-autotype "entry")
+                           :type 'user-error)))
+        (should (string-match-p "wtype" (error-message-string error-data))))
+      (should-not called))))
+
+(ert-deftest simple-pass-autotype-reports-wtype-failure ()
+  "Nonzero wtype exit becomes a user-error."
+  (cl-letf (((symbol-function 'auth-source-pass-get)
+             (lambda (field _entry)
+               (if (equal field "user") "user" "secret")))
+            ((symbol-function 'executable-find)
+             (lambda (_) "wtype"))
+            ((symbol-function 'call-process)
+             (lambda (&rest _) 1)))
+    (should-error (simple-pass-autotype "entry") :type 'user-error)))
+
+(ert-deftest simple-pass-autotype-is-command ()
+  "Autotype is an interactive command."
+  (should (commandp 'simple-pass-autotype))
+  (should (interactive-form 'simple-pass-autotype)))
+
 (ert-deftest simple-pass-edit-dispatches-quoted-entry-to-with-editor ()
   "Editing dispatches the selected entry through `with-editor'."
   (let (command)
-    (cl-letf (((symbol-function 'with-editor-async-shell-command)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_) "pass"))
+              ((symbol-function 'with-editor-async-shell-command)
                (lambda (value)
                  (setq command value))))
       (simple-pass-edit "weird;entry")
       (should (equal "pass edit weird\\;entry" command)))))
 
+(ert-deftest simple-pass-edit-rejects-missing-pass ()
+  "Missing pass binary is a user-error on edit."
+  (let (called)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_) nil))
+              ((symbol-function 'with-editor-async-shell-command)
+               (lambda (&rest _)
+                 (setq called t))))
+      (let ((error-data
+             (should-error (simple-pass-edit "entry")
+                           :type 'user-error)))
+        (should (string-match-p "pass" (error-message-string error-data))))
+      (should-not called))))
+
+(ert-deftest simple-pass-generate-rejects-missing-pass ()
+  "Missing pass binary is a user-error on generate."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _) "new-entry"))
+            ((symbol-function 'simple-pass-entries) (lambda () nil))
+            ((symbol-function 'executable-find)
+             (lambda (_) nil))
+            ((symbol-function 'process-file)
+             (lambda (&rest _)
+               (ert-fail "process-file must not run"))))
+    (let ((error-data
+           (should-error (simple-pass-generate) :type 'user-error)))
+      (should (string-match-p "pass" (error-message-string error-data))))))
+
 (ert-deftest simple-pass-launcher-generate-reaches-generation-body ()
   "Launcher-selected generation accepts an entry and runs its body."
   (let (arguments copied)
     (cl-letf (((symbol-function 'simple-pass-entries) (lambda () nil))
+              ((symbol-function 'executable-find)
+               (lambda (program) program))
               ((symbol-function 'process-file)
                (lambda (program _infile _destination _display &rest args)
                  (setq arguments (cons program args))
@@ -283,5 +448,64 @@
   (should (eq #'simple-pass-copy (simple-pass--launcher-action "COPY PASS")))
   (should (eq #'simple-pass-generate
               (simple-pass--launcher-action "GENERATE"))))
+
+(ert-deftest simple-pass-launcher-rejects-unknown-action ()
+  "Unknown launcher actions are user-errors before funcall."
+  (should-error (simple-pass--launcher-action "NOPE") :type 'user-error)
+  (should-error (simple-pass--launcher-action nil) :type 'user-error))
+
+(ert-deftest simple-pass-read-entry-requires-match ()
+  "Entry prompts pass require-match to completing-read."
+  (let (args)
+    (cl-letf (((symbol-function 'simple-pass-entries)
+               (lambda () '("alpha" "beta")))
+              ((symbol-function 'completing-read)
+               (lambda (&rest actual)
+                 (setq args actual)
+                 "alpha")))
+      (should (equal "alpha" (simple-pass--read-entry "Select entry: ")))
+      (should (eq t (nth 3 args))))))
+
+(ert-deftest simple-pass-call-pass-sets-store-directory-env ()
+  "pass CLI runs with PASSWORD_STORE_DIR from the configured store."
+  (let ((directory (make-temp-file "simple-pass-" t))
+        env-seen)
+    (unwind-protect
+        (let ((simple-pass-password-store-directory directory))
+          (cl-letf (((symbol-function 'executable-find)
+                     (lambda (_) "pass"))
+                    ((symbol-function 'process-file)
+                     (lambda (&rest _)
+                       (setq env-seen
+                             (getenv "PASSWORD_STORE_DIR"))
+                       0)))
+            (simple-pass--call-pass "generate" "x" "20")
+            (should (equal (directory-file-name
+                            (expand-file-name directory))
+                           env-seen))))
+      (delete-directory directory t))))
+
+(ert-deftest simple-pass-get-secret-uses-configured-store ()
+  "Secret lookup binds auth-source-pass-filename to the configured store."
+  (let ((directory (make-temp-file "simple-pass-" t))
+        seen)
+    (unwind-protect
+        (let ((simple-pass-password-store-directory directory))
+          (cl-letf (((symbol-function 'auth-source-pass-get)
+                     (lambda (field entry)
+                       (setq seen (list auth-source-pass-filename field entry))
+                       "secret")))
+            (should (equal "secret"
+                           (simple-pass--get-secret "acct")))
+            (should (equal (list (directory-file-name
+                                  (expand-file-name directory))
+                                 'secret "acct")
+                           seen))))
+      (delete-directory directory t))))
+
+(ert-deftest simple-pass-loads-with-editor ()
+  "with-editor is a hard load dependency."
+  (should (featurep 'with-editor))
+  (should (fboundp 'with-editor-async-shell-command)))
 
 ;;; simple-pass-tests.el ends here

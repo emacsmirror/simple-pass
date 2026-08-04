@@ -30,14 +30,15 @@
 ;; retrieves secrets through `auth-source-pass', and offers commands for
 ;; copying passwords, retrieving OTPs, editing entries, and autotyping them.
 ;; Copied secrets are removed from the kill ring after
-;; `simple-pass-clipboard-timeout' seconds.
+;; `simple-pass-clipboard-timeout' seconds.  When the cleaned cell is still
+;; at the head of the kill ring, the system selection is cleared as well
+;; when `interprogram-cut-function' is available.
 
 ;;; Code:
 
 (require 'auth-source-pass)
 (require 'subr-x)
-
-(declare-function with-editor-async-shell-command "with-editor" (command))
+(require 'with-editor)
 
 (defgroup simple-pass nil
   "A small Emacs front end for pass."
@@ -47,7 +48,9 @@
   "Directory containing the password-store entries.
 
 When nil, use `auth-source-pass-filename' when that variable is
-available, falling back to `~/.password-store'."
+available, falling back to `~/.password-store'.  Non-nil values are
+used for entry discovery, `auth-source-pass' lookups, and the
+`PASSWORD_STORE_DIR' environment variable for the pass CLI."
   :type '(choice (const :tag "Use auth-source-pass" nil)
                  directory)
   :group 'simple-pass)
@@ -55,7 +58,10 @@ available, falling back to `~/.password-store'."
 (defcustom simple-pass-clipboard-timeout 30
   "Seconds before a copied secret is removed from the kill ring.
 
-The timeout applies independently to each password or OTP copy."
+The timeout applies independently to each password or OTP copy.  When
+the cleaned kill-ring cell is still at the head of the kill ring and
+`interprogram-cut-function' is non-nil, the system selection is
+cleared as well."
   :type 'number
   :group 'simple-pass)
 
@@ -68,6 +74,21 @@ The timeout applies independently to each password or OTP copy."
              auth-source-pass-filename)
         "~/.password-store"))))
 
+(defun simple-pass--with-store-env (body)
+  "Call BODY with store path bound for auth-source and pass CLI."
+  (let* ((directory (directory-file-name
+                     (simple-pass--password-store-directory)))
+         (auth-source-pass-filename directory)
+         (process-environment
+          (cons (format "PASSWORD_STORE_DIR=%s" directory)
+                process-environment)))
+    (funcall body)))
+
+(defun simple-pass--require-executable (program)
+  "Signal a user error when PROGRAM is not on `exec-path'."
+  (unless (executable-find program)
+    (user-error "Executable not found: %s" program)))
+
 (defun simple-pass--entry-name (file directory)
   "Return the extension-free entry name for FILE under DIRECTORY."
   (file-name-sans-extension (file-relative-name file directory)))
@@ -78,46 +99,99 @@ The timeout applies independently to each password or OTP copy."
       entry
     (user-error "No pass entry selected")))
 
-(defun simple-pass--process-error (program status)
-  "Signal a clear error for PROGRAM terminating with STATUS."
+(defun simple-pass--read-entry (prompt)
+  "Read an existing pass entry with PROMPT, requiring a match."
+  (simple-pass--require-entry
+   (completing-read prompt (simple-pass-entries) nil t)))
+
+(defun simple-pass--process-error (program status &optional body)
+  "Signal a clear error for PROGRAM terminating with STATUS.
+
+When BODY is non-empty, include a short snippet in the message."
   (unless (and (integerp status) (zerop status))
-    (user-error "%s failed (exit status %s)" program status)))
+    (let* ((snippet (and body
+                         (let ((text (string-trim body)))
+                           (unless (string-empty-p text)
+                             (replace-regexp-in-string
+                              "[\n\r]+" " "
+                              (if (> (length text) 200)
+                                  (substring text 0 200)
+                                text))))))
+           (detail (if snippet
+                       (format "%s failed (exit status %s): %s"
+                               program status snippet)
+                     (format "%s failed (exit status %s)"
+                             program status))))
+      (user-error "%s" detail))))
+
+(defun simple-pass--call-pass (&rest args)
+  "Run pass with ARGS under the configured store directory.
+
+Capture mixed stdout/stderr.  Return (STATUS . OUTPUT).  Signal a
+user error when the pass executable is missing."
+  (simple-pass--require-executable "pass")
+  (simple-pass--with-store-env
+   (lambda ()
+     (with-temp-buffer
+       (cons (apply #'process-file "pass" nil (list t t) nil args)
+             (buffer-string))))))
 
 (defun simple-pass--cleanup-kill-ring-cell (cell)
-  "Remove the exact kill-ring cons CELL and release its secret value."
-  (if (eq kill-ring cell)
-      (setq kill-ring (cdr cell))
-    (let ((tail kill-ring))
-      (while (and (consp tail) (not (eq (cdr tail) cell)))
-        (setq tail (cdr tail)))
-      (when (eq (cdr tail) cell)
-        (setcdr tail (cdr cell)))))
-  (setcar cell nil))
+  "Remove the exact kill-ring cons CELL and release its secret value.
+
+When CELL is at the head of the kill ring and
+`interprogram-cut-function' is non-nil, also clear the system
+selection."
+  (let ((was-head (eq kill-ring cell)))
+    (if (eq kill-ring cell)
+        (setq kill-ring (cdr cell))
+      (let ((tail kill-ring))
+        (while (and (consp tail) (not (eq (cdr tail) cell)))
+          (setq tail (cdr tail)))
+        (when (eq (cdr tail) cell)
+          (setcdr tail (cdr cell)))))
+    (setcar cell nil)
+    (when (and was-head
+               (boundp 'interprogram-cut-function)
+               interprogram-cut-function)
+      (ignore-errors (funcall interprogram-cut-function "")))))
 
 (defun simple-pass--copy-to-kill-ring (secret)
   "Copy SECRET to the kill ring and schedule bounded cleanup.
 
-Return SECRET.  Cleanup tracks the exact kill-ring cell introduced by
-`kill-new', rather than deleting equal-looking entries later."
+Return SECRET.  Cleanup tracks the kill-ring cell that holds SECRET
+after `kill-new', including when `kill-do-not-save-duplicates'
+suppresses a new push."
   (let ((old-kill-ring kill-ring))
     (kill-new secret)
-    (unless (eq old-kill-ring kill-ring)
-      (run-at-time simple-pass-clipboard-timeout nil
-                   #'simple-pass--cleanup-kill-ring-cell
-                   kill-ring)))
+    (let ((cell (cond
+                 ((not (eq old-kill-ring kill-ring)) kill-ring)
+                 ((and (consp kill-ring)
+                       (equal (car kill-ring) secret))
+                  kill-ring))))
+      (when cell
+        (run-at-time simple-pass-clipboard-timeout nil
+                     #'simple-pass--cleanup-kill-ring-cell
+                     cell))))
   secret)
+
+(defun simple-pass--get-secret (entry &optional field)
+  "Return FIELD (default secret) for ENTRY under the configured store."
+  (simple-pass--with-store-env
+   (lambda ()
+     (auth-source-pass-get (or field 'secret) entry))))
 
 (defun simple-pass-entries ()
   "Return sorted, extension-free names of all pass entries.
 
-Signal a distinct error when the configured password store is missing or
+Signal a user error when the configured password store is missing or
 unreadable."
   (let ((directory (simple-pass--password-store-directory)))
     (cond
      ((not (file-directory-p directory))
-      (error "Password store does not exist: %s" directory))
+      (user-error "Password store does not exist: %s" directory))
      ((not (file-readable-p directory))
-      (error "Password store is not readable: %s" directory))
+      (user-error "Password store is not readable: %s" directory))
      (t
       (sort
        (delete-dups
@@ -125,16 +199,21 @@ unreadable."
                 (directory-files-recursively directory "\\.gpg\\'")))
        #'string-lessp)))))
 
+(defun simple-pass--resolve-entry (entry prompt)
+  "Return ENTRY after validation, or read one with PROMPT when nil."
+  (if entry
+      (simple-pass--require-entry entry)
+    (simple-pass--read-entry prompt)))
+
 (defun simple-pass-copy (&optional entry)
   "Add the secret for ENTRY to the kill ring.
 
-Signal a user error naming ENTRY when it has no secret.  The copied secret
-will be deleted from the kill ring after
+Signal a user error naming ENTRY when it has no secret.  The copied
+secret is removed from the kill ring after
 `simple-pass-clipboard-timeout' seconds."
   (interactive)
-  (let* ((entry (simple-pass--require-entry
-                 (or entry (completing-read "Select entry: " (simple-pass-entries)))))
-         (pass (auth-source-pass-get 'secret entry)))
+  (let* ((entry (simple-pass--resolve-entry entry "Select entry: "))
+         (pass (simple-pass--get-secret entry)))
     (unless pass
       (user-error "No secret found for pass entry: %s" entry))
     (simple-pass--copy-to-kill-ring pass)))
@@ -149,50 +228,51 @@ When ENTRY is nil, prompt for the new entry name."
                  (or entry (read-string "New entry: "))))
          (length (+ 14 (random 25))))
     (if (member entry entries)
-        (error "Entry already exists")
-      (simple-pass--process-error
-       "pass generate"
-       (process-file "pass" nil nil nil "generate" entry
-                     (number-to-string length)))
-      (simple-pass-copy entry))))
+        (user-error "Entry already exists")
+      (pcase-let ((`(,status . ,output)
+                   (simple-pass--call-pass
+                    "generate" entry (number-to-string length))))
+        (simple-pass--process-error "pass generate" status output)
+        (simple-pass-copy entry)))))
 
 (defun simple-pass-edit (&optional entry)
   "Edit pass ENTRY."
   (interactive)
-  (let ((entry (simple-pass--require-entry
-                (or entry (completing-read "Select entry: " (simple-pass-entries))))))
-    (with-editor-async-shell-command
-     (format "pass edit %s" (shell-quote-argument entry)))))
+  (let ((entry (simple-pass--resolve-entry entry "Select entry: ")))
+    (simple-pass--require-executable "pass")
+    (simple-pass--with-store-env
+     (lambda ()
+       (with-editor-async-shell-command
+        (format "pass edit %s" (shell-quote-argument entry)))))))
 
 (defun simple-pass-autotype (&optional entry)
   "Autotype password ENTRY.
-Signal a user error when ENTRY has no secret."
-  (let* ((entry (simple-pass--require-entry
-                 (or entry (completing-read "Select entry: " (simple-pass-entries)))))
-	 (user (or (auth-source-pass-get "user" entry) (file-name-base entry)))
-	 (pass (auth-source-pass-get 'secret entry)))
+
+Signal a user error when ENTRY has no secret, when wtype is missing,
+or when wtype exits nonzero."
+  (interactive)
+  (let* ((entry (simple-pass--resolve-entry entry "Select entry: "))
+         (user (or (simple-pass--get-secret entry "user")
+                   (file-name-base entry)))
+         (pass (simple-pass--get-secret entry)))
     (unless pass
       (user-error "No password found for %s" entry))
-    (start-process "wtype" nil "wtype" "-s" "300" user "-P" "tab" pass)))
+    (simple-pass--require-executable "wtype")
+    (simple-pass--process-error
+     "wtype"
+     (call-process "wtype" nil nil nil
+                   "-s" "300" user "-P" "tab" pass))))
 
 (defun simple-pass-get-otp (&optional entry)
   "Get OTP for ENTRY."
   (interactive)
-  (let* ((entry (simple-pass--require-entry
-                 (or entry (completing-read "Select otp entry: " (simple-pass-entries)))))
-         (buffer (generate-new-buffer " *simple-pass-otp*")))
-    (unwind-protect
-        (progn
-          (simple-pass--process-error
-           "pass otp show"
-           (process-file "pass" nil buffer nil "otp" "show" entry))
-          (with-current-buffer buffer
-            (let ((otp (string-trim (buffer-string))))
-              (if (string-empty-p otp)
-                  (user-error "No OTP returned for %s" entry)
-                (simple-pass--copy-to-kill-ring otp)))))
-      (kill-buffer buffer))))
-
+  (let ((entry (simple-pass--resolve-entry entry "Select otp entry: ")))
+    (pcase-let ((`(,status . ,output) (simple-pass--call-pass "otp" "show" entry)))
+      (simple-pass--process-error "pass otp show" status output)
+      (let ((otp (string-trim output)))
+        (if (string-empty-p otp)
+            (user-error "No OTP returned for %s" entry)
+          (simple-pass--copy-to-kill-ring otp))))))
 (defmacro simple-pass-make-frame (name &rest body)
   "Execute BODY in a temporary frame named NAME.
 Frame is automatically deleted after BODY execution."
@@ -209,22 +289,26 @@ Frame is automatically deleted after BODY execution."
        (delete-frame frame))))
 
 (defun simple-pass--launcher-action (choice)
-  "Return the command corresponding to launcher CHOICE."
+  "Return the command corresponding to launcher CHOICE.
+
+Signal a user error for unknown CHOICE."
   (pcase choice
     ("AUTO" #'simple-pass-autotype)
     ("COPY PASS" #'simple-pass-copy)
-    ("GENERATE" #'simple-pass-generate)))
+    ("GENERATE" #'simple-pass-generate)
+    (_ (user-error "Unknown launcher action: %s" choice))))
 
 (defun simple-pass-launcher ()
   "Launch an Emacs frame as a front-end for pass."
   (interactive)
   (simple-pass-make-frame "emacs-float"
     (let* ((choice (completing-read "Choose an action: "
-				    '("AUTO" "COPY PASS" "GENERATE")))
-	   (action (simple-pass--launcher-action choice)))
+                                    '("AUTO" "COPY PASS" "GENERATE")
+                                    nil t))
+           (action (simple-pass--launcher-action choice)))
       (if (eq action #'simple-pass-generate)
           (funcall action)
-        (funcall action (completing-read "Search: " (simple-pass-entries)))))))
+        (funcall action (simple-pass--read-entry "Search: "))))))
 
 (provide 'simple-pass)
 ;;; simple-pass.el ends here

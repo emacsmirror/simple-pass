@@ -27,12 +27,17 @@ The principal commands are:
 - =M-x simple-pass-generate=
 - =M-x simple-pass-edit=
 - =M-x simple-pass-get-otp=
+- =M-x simple-pass-autotype=
 
 * Options
 
-- =simple-pass-password-store-directory= selects the password store.
+- =simple-pass-password-store-directory= selects the password store for
+  entry discovery, secret lookup, and the pass CLI
+  (=PASSWORD_STORE_DIR=).
 - =simple-pass-clipboard-timeout= controls how long copied secrets remain
-  in the kill ring.
+  in the kill ring.  When the timed-out cell is still at the head of the
+  kill ring, the system selection is cleared too if
+  =interprogram-cut-function= is available.
 
 * License
 
